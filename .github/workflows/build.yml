@@ -6,6 +6,10 @@ on:
         description: "calcom/docker tag to build (its submodule pins the cal.com version)"
         required: true
         default: "v5.9.10"
+      runner_node:
+        description: "node image for the RUNNER stage only (upstream pins node:18, EOL; 20-bookworm is the trial)"
+        required: false
+        default: "18"
 permissions:
   contents: read
   packages: write
@@ -25,6 +29,7 @@ jobs:
         run: |
           v=$(python3 -c 'import json;print(json.load(open("calcom/apps/web/package.json"))["version"])')
           echo "version=$v" >> "$GITHUB_OUTPUT"; echo "stamp=$(date -u +%Y%m%d)" >> "$GITHUB_OUTPUT"; echo "cal.com $v (docker tag ${{ inputs.docker_tag }})"
+          sfx=""; [ "${{ inputs.runner_node }}" != "18" ] && sfx="-node${{ inputs.runner_node }}"; echo "suffix=$sfx" >> "$GITHUB_OUTPUT"
       - name: arm64 fixes to the unmodified Dockerfile (no source change)
         # 1st run 2026-11-03 (run 41682735370) failed at `yarn … @calcom/web run build` with "command not found: turbo":
         # on arm64 the turbo bin was not linked after `yarn install`. Fetch every platform's optional binaries and put the
@@ -48,6 +53,11 @@ jobs:
           s = s.replace(anchor, anchor + "RUN apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get -y -qq upgrade && rm -rf /var/lib/apt/lists/*\n", 1)
           open("Dockerfile", "w").write(s); print("runner stage: apt upgrade added")
           PY
+          if [ "${{ inputs.runner_node }}" != "18" ]; then
+            sed -i "s|^FROM node:18 AS runner$|FROM node:${{ inputs.runner_node }} AS runner|" Dockerfile
+            grep -q "^FROM node:${{ inputs.runner_node }} AS runner" Dockerfile || { echo "runner node swap not applied" >&2; exit 1; }
+            echo "runner stage on node:${{ inputs.runner_node }} (build stages stay on node:18)"
+          fi
           grep -nE '^RUN (yarn install|npm install -g turbo)' Dockerfile | cut -c1-120; tail -4 calcom/.yarnrc.yml
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
@@ -63,9 +73,9 @@ jobs:
           push: true
           provenance: false
           tags: |
-            ghcr.io/jphein/calcom-arm64:v${{ steps.ver.outputs.version }}
-            ghcr.io/jphein/calcom-arm64:v${{ steps.ver.outputs.version }}-${{ steps.ver.outputs.stamp }}
-            ghcr.io/jphein/calcom-arm64:latest
+            ghcr.io/jphein/calcom-arm64:v${{ steps.ver.outputs.version }}-${{ steps.ver.outputs.stamp }}${{ steps.ver.outputs.suffix }}
+            ${{ steps.ver.outputs.suffix == '' && format('ghcr.io/jphein/calcom-arm64:v{0}', steps.ver.outputs.version) || '' }}
+            ${{ steps.ver.outputs.suffix == '' && 'ghcr.io/jphein/calcom-arm64:latest' || '' }}
           build-args: |
             MAX_OLD_SPACE_SIZE=8192
             CALCOM_TELEMETRY_DISABLED=1
