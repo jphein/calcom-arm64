@@ -33,7 +33,10 @@ jobs:
           printf 'supportedArchitectures:\n  os: [current]\n  cpu: [current, x64, arm64]\n  libc: [current, glibc]\n' >> calcom/.yarnrc.yml
           tv=$(python3 -c 'import json;print(json.load(open("calcom/package.json"))["devDependencies"]["turbo"].lstrip("^~"))')
           sed -i 's/\r$//' Dockerfile   # calcom/docker's Dockerfile has CRLF line endings: run 2 (41684199239) matched nothing
-          sed -i "s|^RUN yarn install$|RUN yarn install \&\& (test -x node_modules/.bin/turbo \|\| npm install -g turbo@$tv)|" Dockerfile
+          # run 3 (41686174834): the conditional fallback saw node_modules/.bin/turbo present, yet yarn's shell still said
+          # "command not found: turbo" in the web workspace. Install the pinned turbo globally unconditionally and print
+          # what the workspace sees, so the next failure (if any) is diagnosable from the log.
+          sed -i "s|^RUN yarn install$|RUN yarn install \&\& npm install -g turbo@$tv \&\& (ls -la node_modules/.bin/turbo node_modules/turbo/bin apps/web/node_modules/.bin 2>\&1 \| head -20; which turbo; turbo --version; cd apps/web \&\& yarn bin turbo; true)|" Dockerfile
           grep -n 'RUN yarn install' Dockerfile | grep -q 'npm install -g turbo' || { echo "turbo fallback not applied" >&2; exit 1; }
           grep -n 'RUN yarn install' Dockerfile; tail -4 calcom/.yarnrc.yml
       - uses: docker/setup-buildx-action@v3
