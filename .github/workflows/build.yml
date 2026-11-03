@@ -38,8 +38,8 @@ jobs:
           # what the workspace sees, so the next failure (if any) is diagnosable from the log.
           # a SEPARATE RUN line (its own build step): yarn install's log is clipped at 2 MiB, diagnostics chained into it vanish
           sed -i "s|^RUN yarn install$|RUN yarn install\nRUN npm install -g turbo@$tv \&\& (ls -la node_modules/.bin/turbo node_modules/turbo/bin apps/web/node_modules/.bin 2>\&1 \| head -20; which turbo; turbo --version; cd apps/web \&\& yarn bin turbo; true)|" Dockerfile
-          grep -n 'RUN yarn install' Dockerfile | grep -q 'npm install -g turbo' || { echo "turbo fallback not applied" >&2; exit 1; }
-          grep -n 'RUN yarn install' Dockerfile; tail -4 calcom/.yarnrc.yml
+          grep -q '^RUN npm install -g turbo' Dockerfile || { echo "turbo fallback not applied" >&2; exit 1; }
+          grep -nE '^RUN (yarn install|npm install -g turbo)' Dockerfile | cut -c1-120; tail -4 calcom/.yarnrc.yml
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
         with:
