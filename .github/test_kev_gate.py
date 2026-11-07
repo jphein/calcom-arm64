@@ -1,0 +1,57 @@
+#!/usr/bin/env python3
+"""Fixture tests for kev_gate.py (no network). Run: python3 .github/test_kev_gate.py"""
+import datetime, json, os, subprocess, sys, tempfile
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+GATE = os.path.join(HERE, "kev_gate.py")
+NOW = datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+
+def feed(released=NOW, drop=()):
+    ids = ["CVE-2025-55182", "CVE-2025-31125"] + [f"CVE-2000-{i}" for i in range(600)]
+    return {"dateReleased": released, "vulnerabilities": [{"cveID": c} for c in ids if c not in drop]}
+
+
+def scan(vulns, pkgs=("next", "vite"), image="sha256:abc", results=True, os_result=True):
+    if not results:
+        return {"Metadata": {"ImageID": image}, "Results": []}
+    v = [{"VulnerabilityID": c, "PkgName": p, "InstalledVersion": "x"} for c, p in vulns]
+    res = [{"Target": "node", "Class": "lang-pkgs", "Packages": [{"Name": p} for p in pkgs], "Vulnerabilities": v}]
+    if os_result:
+        res.append({"Target": "debian", "Class": "os-pkgs", "Packages": [{"Name": "libc6"}]})
+    return {"Metadata": {"ImageID": image}, "Results": res}
+
+
+CASES = [  # name, scan, feed, allow, args, want
+    ("KEV next blocks", scan([("CVE-2025-55182", "next")]), feed(), "", ["--require-pkg", "next"], 1),
+    ("allowed vite passes", scan([("CVE-2025-31125", "vite")]), feed(), "CVE-2025-31125 vite exp:2099-01-01\n", ["--require-pkg", "next"], 0),
+    ("allow is per package", scan([("CVE-2025-31125", "esbuild")]), feed(), "CVE-2025-31125 vite exp:2099-01-01\n", [], 1),
+    ("expired allow blocks", scan([("CVE-2025-31125", "vite")]), feed(), "CVE-2025-31125 vite exp:2000-01-01\n", [], 1),
+    ("empty results fail closed", scan([], results=False), feed(), "", [], 2),
+    ("wrong image fails closed", scan([], image="sha256:zzz"), feed(), "", [], 2),
+    ("missing required pkg fails closed", scan([], pkgs=("vite",)), feed(), "", ["--require-pkg", "next"], 2),
+    ("stale feed fails closed", scan([]), feed(released="2025-01-01T00:00:00Z"), "", [], 2),
+    ("feed without sentinel fails closed", scan([]), feed(drop=("CVE-2025-55182",)), "", [], 2),
+    ("partial scan (no os-pkgs) fails closed", scan([], os_result=False), feed(), "", ["--require-pkg", "next", "--require-class", "os-pkgs", "--require-class", "lang-pkgs"], 2),
+    ("full-coverage clean scan passes", scan([]), feed(), "", ["--require-pkg", "next", "--require-class", "os-pkgs", "--require-class", "lang-pkgs"], 0),
+    ("clean scan passes", scan([]), feed(), "", ["--require-pkg", "next"], 0),
+]
+
+
+def main():
+    bad = 0
+    with tempfile.TemporaryDirectory() as d:
+        for name, s, f, allow, args, want in CASES:
+            for fn, obj in (("s.json", s), ("k.json", f)):
+                json.dump(obj, open(os.path.join(d, fn), "w"))
+            open(os.path.join(d, "a.txt"), "w").write(allow)
+            rc = subprocess.run([sys.executable, GATE, *(os.path.join(d, x) for x in ("s.json", "k.json", "a.txt")),
+                                 "--image-id", "sha256:abc", *args], capture_output=True).returncode
+            ok = rc == want
+            bad += not ok
+            print(("ok  " if ok else "FAIL"), name, f"rc={rc} want={want}")
+    return 1 if bad else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
