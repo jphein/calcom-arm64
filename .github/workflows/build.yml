@@ -6,6 +6,10 @@ on:
         description: "calcom/docker tag to build (its submodule pins the cal.com version)"
         required: true
         default: "v5.9.10"
+      calcom_ref:
+        description: "cal.com ref (tag or sha) to build INSTEAD of the docker tag's submodule pin. calcom/docker v5.9.10 pins bf89991 (next 15.5.4, CVE-2025-55182 React2Shell); cal.com's own v5.9.10 tag has next 15.5.7"
+        required: false
+        default: ""
       runner_node:
         description: "node image for the RUNNER stage only (upstream pins node:18, EOL; 20-bookworm is the trial)"
         required: false
@@ -24,16 +28,31 @@ jobs:
           ref: ${{ inputs.docker_tag }}
           submodules: recursive
           fetch-depth: 1
+      - name: cal.com source override (calcom_ref)
+        if: ${{ inputs.calcom_ref != '' }}
+        env:
+          REF: ${{ inputs.calcom_ref }}
+        run: |
+          [[ "$REF" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]] || { echo "bad calcom_ref" >&2; exit 1; }
+          git -C calcom fetch --depth 1 origin "refs/tags/$REF:refs/tags/$REF" 2>/dev/null || git -C calcom fetch --depth 1 origin "$REF"
+          git -C calcom -c advice.detachedHead=false checkout --force FETCH_HEAD 2>/dev/null || git -C calcom -c advice.detachedHead=false checkout --force "refs/tags/$REF"
+          echo "cal.com source now at $(git -C calcom rev-parse HEAD) ($REF)"
       - name: cal.com version from the submodule
         id: ver
+        env:
+          RN: ${{ inputs.runner_node }}
+          DT: ${{ inputs.docker_tag }}
         run: |
+          [[ "$RN" =~ ^[0-9]{2}(-[a-z]+)?$ ]] || { echo "runner_node must look like 22 or 22-bookworm" >&2; exit 1; }
           v=$(python3 -c 'import json;print(json.load(open("calcom/apps/web/package.json"))["version"])')
-          echo "version=$v" >> "$GITHUB_OUTPUT"; echo "stamp=$(date -u +%Y%m%d)" >> "$GITHUB_OUTPUT"; echo "cal.com $v (docker tag ${{ inputs.docker_tag }})"
-          sfx=""; [ "${{ inputs.runner_node }}" != "18" ] && sfx="-node${{ inputs.runner_node }}"; echo "suffix=$sfx" >> "$GITHUB_OUTPUT"
+          echo "version=$v" >> "$GITHUB_OUTPUT"; echo "stamp=$(date -u +%Y%m%d)" >> "$GITHUB_OUTPUT"; echo "cal.com $v (docker tag $DT)"
+          sfx=""; [ "$RN" != "18" ] && sfx="-node$RN"; echo "suffix=$sfx" >> "$GITHUB_OUTPUT"
       - name: arm64 fixes to the unmodified Dockerfile (no source change)
         # 1st run 2026-11-03 (run 41682735370) failed at `yarn … @calcom/web run build` with "command not found: turbo":
         # on arm64 the turbo bin was not linked after `yarn install`. Fetch every platform's optional binaries and put the
         # pinned turbo on PATH as a fallback; nothing else in calcom/docker's Dockerfile changes.
+        env:
+          RN: ${{ inputs.runner_node }}
         run: |
           printf 'supportedArchitectures:\n  os: [current]\n  cpu: [current, x64, arm64]\n  libc: [current, glibc]\n' >> calcom/.yarnrc.yml
           tv=$(python3 -c 'import json;print(json.load(open("calcom/package.json"))["devDependencies"]["turbo"].lstrip("^~"))')
@@ -53,10 +72,11 @@ jobs:
           s = s.replace(anchor, anchor + "RUN apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get -y -qq upgrade && rm -rf /var/lib/apt/lists/*\n", 1)
           open("Dockerfile", "w").write(s); print("runner stage: apt upgrade added")
           PY
-          if [ "${{ inputs.runner_node }}" != "18" ]; then
-            sed -i "s|^FROM node:18 AS runner$|FROM node:${{ inputs.runner_node }} AS runner|" Dockerfile
-            grep -q "^FROM node:${{ inputs.runner_node }} AS runner" Dockerfile || { echo "runner node swap not applied" >&2; exit 1; }
-            echo "runner stage on node:${{ inputs.runner_node }} (build stages stay on node:18)"
+          [[ "$RN" =~ ^[0-9]{2}(-[a-z]+)?$ ]] || { echo "bad runner_node" >&2; exit 1; }
+          if [ "$RN" != "18" ]; then
+            sed -i "s|^FROM node:18 AS runner$|FROM node:$RN AS runner|" Dockerfile
+            grep -q "^FROM node:$RN AS runner" Dockerfile || { echo "runner node swap not applied" >&2; exit 1; }
+            echo "runner stage on node:$RN (build stages stay on node:18)"
           fi
           grep -nE '^RUN (yarn install|npm install -g turbo)' Dockerfile | cut -c1-120; tail -4 calcom/.yarnrc.yml
       - uses: docker/setup-buildx-action@v3
@@ -65,20 +85,52 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: build + push linux/arm64
+      - name: build linux/arm64 ONCE (loaded locally; the scanned image is the pushed image)
         uses: docker/build-push-action@v6
         with:
           context: .
           platforms: linux/arm64
-          push: true
+          load: true
           provenance: false
-          tags: |
-            ghcr.io/jphein/calcom-arm64:v${{ steps.ver.outputs.version }}-${{ steps.ver.outputs.stamp }}${{ steps.ver.outputs.suffix }}
-            ${{ steps.ver.outputs.suffix == '' && format('ghcr.io/jphein/calcom-arm64:v{0}', steps.ver.outputs.version) || '' }}
-            ${{ steps.ver.outputs.suffix == '' && 'ghcr.io/jphein/calcom-arm64:latest' || '' }}
+          tags: calcom-arm64:gate
           build-args: |
             MAX_OLD_SPACE_SIZE=8192
             CALCOM_TELEMETRY_DISABLED=1
           labels: |
             org.opencontainers.image.source=https://github.com/calcom/cal.com
             org.opencontainers.image.version=${{ steps.ver.outputs.version }}
+      - name: checkout this repo (gate script + allow list), after the build so it is never in the build context
+        uses: actions/checkout@v4
+        with:
+          path: _gate
+      - name: KEV gate (fails on any CISA-KEV finding not in kev-allow.txt)
+        # 2026-11-07: v5.9.10-20261104 shipped next 15.5.4 (CVE-2025-55182, KEV) to a public host and was exploited within a day.
+        env:
+          TRIVY_VERSION: "0.75.0"
+        run: |
+          set -euo pipefail
+          case "$(uname -m)" in aarch64|arm64) arch=ARM64 ;; x86_64) arch=64bit ;; *) echo "unknown runner arch $(uname -m)" >&2; exit 1 ;; esac
+          t=$(mktemp -d); asset="trivy_${TRIVY_VERSION}_Linux-${arch}.tar.gz"
+          curl -sSfL "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/${asset}" -o "$t/$asset"
+          curl -sSfL "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_checksums.txt" -o "$t/sums"
+          grep -E "  ${asset}\$" "$t/sums" > "$t/one"
+          test "$(wc -l < "$t/one")" -eq 1
+          (cd "$t" && sha256sum -c one)
+          tar -xzf "$t/$asset" -C "$t" trivy
+          "$t/trivy" --version
+          img=$(docker image inspect calcom-arm64:gate --format '{{.Id}}')
+          "$t/trivy" image --quiet --scanners vuln --list-all-pkgs --format json -o "$t/scan.json" calcom-arm64:gate
+          curl -sSfL https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json -o "$t/kev.json"
+          python3 _gate/.github/kev_gate.py "$t/scan.json" "$t/kev.json" _gate/kev-allow.txt --image-id "$img" --require-pkg next --require-min next=15.5.7 --require-class os-pkgs --require-class lang-pkgs
+          echo "GATED_ID=$img" >> "$GITHUB_ENV"
+      - name: push the scanned image (re-tag, no rebuild)
+        env:
+          TAG1: ghcr.io/jphein/calcom-arm64:v${{ steps.ver.outputs.version }}-${{ steps.ver.outputs.stamp }}${{ steps.ver.outputs.suffix }}
+          SUFFIX: ${{ steps.ver.outputs.suffix }}
+          VER: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          test "$(docker image inspect calcom-arm64:gate --format '{{.Id}}')" = "$GATED_ID"
+          tags=("$TAG1"); [ -z "$SUFFIX" ] && tags+=("ghcr.io/jphein/calcom-arm64:v$VER" "ghcr.io/jphein/calcom-arm64:latest")
+          for t in "${tags[@]}"; do docker tag calcom-arm64:gate "$t"; docker push "$t"; done
+          docker image inspect "$TAG1" --format '{{.Id}} {{index .RepoDigests 0}}'
