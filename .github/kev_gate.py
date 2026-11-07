@@ -7,11 +7,18 @@ must fail the build, never pass it).
 
 Coverage: an empty or partial scan must not pass. --image-id must equal the scan's Metadata.ImageID, and every
 --require-pkg must appear among the scanned packages (trivy --list-all-pkgs), so "nothing was scanned" cannot
-read as "clean". The KEV feed must be fresh (dateReleased within FEED_MAX_AGE_DAYS) and hold SENTINEL.
+read as "clean". The KEV feed must be fresh (dateReleased within FEED_MAX_AGE_DAYS, not in the future), hold
+SENTINEL, have at least FEED_MIN entries and agree with its own "count".
+
+Residual (documented, xreview 2026-11-07): the gate cannot tell from the JSON that trivy ran its vulnerability
+scanner; the workflow step that produces the scan runs `--scanners vuln` itself. --require-min floors the
+incident's package independently of the scanner. A feed trimmed of one entry yet re-counted would pass; it is
+fetched over HTTPS from cisa.gov in the same step.
 """
 import argparse, datetime, json, re, sys
 
 FEED_MAX_AGE_DAYS = 14
+FEED_MIN = 1500   # CISA KEV held 1769 on 2026-11-07 and only grows; a much shorter feed is not the feed
 SENTINEL = "CVE-2025-55182"  # the incident CVE: a feed without it is not the feed we think it is
 
 
@@ -66,7 +73,8 @@ def main(argv):
     now = datetime.datetime.now(datetime.timezone.utc)
     age = (now - released).days
     future = released > now + datetime.timedelta(minutes=10)   # 10 min of clock skew; any later date is not fresh
-    if age > FEED_MAX_AGE_DAYS or future or SENTINEL not in kev or len(kev) < 500:
+    count_ok = feed.get("count") == len(feed["vulnerabilities"]) == len(kev)   # the feed's own count must agree
+    if age > FEED_MAX_AGE_DAYS or future or SENTINEL not in kev or len(kev) < FEED_MIN or not count_ok:
         print(f"KEV gate: feed not trusted (age {age}d, future {future}, {len(kev)} entries, sentinel {SENTINEL in kev}); failing closed", file=sys.stderr)
         return 2
     results = scan.get("Results") if isinstance(scan, dict) else None

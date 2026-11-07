@@ -7,9 +7,10 @@ GATE = os.path.join(HERE, "kev_gate.py")
 NOW = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
 
-def feed(released=NOW, drop=()):
-    ids = ["CVE-2025-55182", "CVE-2025-31125"] + [f"CVE-2000-{i}" for i in range(600)]
-    return {"dateReleased": released, "vulnerabilities": [{"cveID": c} for c in ids if c not in drop]}
+def feed(released=NOW, drop=(), count_off=0):
+    ids = ["CVE-2025-55182", "CVE-2025-31125"] + [f"CVE-2000-{i}" for i in range(1600)]
+    v = [{"cveID": c} for c in ids if c not in drop]
+    return {"dateReleased": released, "count": len(v) + count_off, "vulnerabilities": v}
 
 
 def scan(vulns, pkgs=("next", "vite"), image="sha256:abc", results=True, os_result=True, versions=None, vendor=None):
@@ -47,6 +48,10 @@ CASES = [  # name, scan, feed, allow, args, want
     ("a required minimum for an absent package fails closed", scan([], pkgs=("vite",)), feed(), "", ["--require-min", "next=15.5.7"], 2),
     ("a pre-release floor fails closed", scan([]), feed(), "", ["--require-min", "next=15.5.7-canary.2"], 2),
     ("nameless package entries are no coverage", {"Metadata": {"ImageID": "sha256:abc"}, "Results": [{"Packages": [{}]}]}, feed(), "", [], 2),
+    ("a feed whose count disagrees fails closed", scan([]), feed(count_off=1), "", [], 2),
+    ("a feed of 600 entries is too short", scan([]),
+     {"dateReleased": NOW, "count": 602, "vulnerabilities": [{"cveID": c} for c in ["CVE-2025-55182", "CVE-2025-31125"] + [f"CVE-2000-{i}" for i in range(600)]]},
+     "", [], 2),
     ("next below the floor blocks", scan([], versions={"next": "15.5.4"}), feed(), "", ["--require-min", "next=15.5.7"], 1),
     ("next pre-release below the floor blocks", scan([], versions={"next": "15.5.7-canary.1"}), feed(), "", ["--require-min", "next=15.5.7"], 1),
     ("next at the floor passes", scan([], versions={"next": "15.5.7"}), feed(), "", ["--require-min", "next=15.5.7"], 0),
