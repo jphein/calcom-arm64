@@ -63,9 +63,11 @@ def main(argv):
     except (OSError, ValueError, KeyError, TypeError) as e:
         print(f"KEV gate: unreadable input ({e!r}); failing closed", file=sys.stderr)
         return 2
-    age = (datetime.datetime.now(datetime.timezone.utc) - released).days
-    if age > FEED_MAX_AGE_DAYS or age < -1 or SENTINEL not in kev or len(kev) < 500:   # a future-dated feed is not fresh
-        print(f"KEV gate: feed not trusted (age {age}d, {len(kev)} entries, sentinel {SENTINEL in kev}); failing closed", file=sys.stderr)
+    now = datetime.datetime.now(datetime.timezone.utc)
+    age = (now - released).days
+    future = released > now + datetime.timedelta(minutes=10)   # 10 min of clock skew; any later date is not fresh
+    if age > FEED_MAX_AGE_DAYS or future or SENTINEL not in kev or len(kev) < 500:
+        print(f"KEV gate: feed not trusted (age {age}d, future {future}, {len(kev)} entries, sentinel {SENTINEL in kev}); failing closed", file=sys.stderr)
         return 2
     results = scan.get("Results") if isinstance(scan, dict) else None
     sid = ((scan.get("Metadata") or {}).get("ImageID") if isinstance(scan, dict) else None)
@@ -75,14 +77,15 @@ def main(argv):
     if sid != a.image_id:
         print(f"KEV gate: scan ImageID {sid} is not the built image {a.image_id}; failing closed", file=sys.stderr)
         return 2
-    classes = {r.get("Class") for r in results}
-    lacking = [c for c in a.require_class if not any(r.get("Class") == c and r.get("Packages") for r in results)]
-    if lacking:
-        print(f"KEV gate: no scanned packages of class {lacking} (classes seen {sorted(map(str, classes))}); failing closed", file=sys.stderr)
-        return 2
-    pkgs = {p.get("Name") for r in results for p in (r.get("Packages") or [])}
+    named = lambda r: [p for p in (r.get("Packages") or []) if isinstance(p, dict) and isinstance(p.get("Name"), str) and p["Name"]]
+    pkgs = {p["Name"] for r in results if isinstance(r, dict) for p in named(r)}
     if not pkgs:
         print("KEV gate: the scan lists no packages (run trivy with --list-all-pkgs); failing closed", file=sys.stderr)
+        return 2
+    classes = {r.get("Class") for r in results if isinstance(r, dict)}
+    lacking = [c for c in a.require_class if not any(isinstance(r, dict) and r.get("Class") == c and named(r) for r in results)]
+    if lacking:
+        print(f"KEV gate: no scanned packages of class {lacking} (classes seen {sorted(map(str, classes))}); failing closed", file=sys.stderr)
         return 2
     missing = [p for p in a.require_pkg if p not in pkgs]
     if missing:
@@ -91,11 +94,14 @@ def main(argv):
     for spec in a.require_min:
         name, _, floor = spec.partition("=")
         fv = _ver(floor)
-        if not name or fv is None:
+        if not name or fv is None or fv[-1] == -1:   # a pre-release floor can't be compared safely: refused
             print(f"KEV gate: bad --require-min {spec!r}; failing closed", file=sys.stderr)
             return 2
         low = [p.get("Version") for r in results for p in (r.get("Packages") or [])
                if p.get("Name") == name and (_ver(p.get("Version")) is None or _ver(p.get("Version")) < fv)]
+        if name not in pkgs:
+            print(f"KEV gate: --require-min {name}: no such package in the scan; failing closed", file=sys.stderr)
+            return 2
         if low:   # an unparsable installed version counts as below the floor
             print(f"KEV gate: {name} {sorted(set(map(str, low)))} below the required {floor}", file=sys.stderr)
             return 1
