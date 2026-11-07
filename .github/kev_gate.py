@@ -26,12 +26,20 @@ _VER = re.compile(r"v?(\d+(?:\.\d+)*)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?
 
 
 def _ver(v):
-    """Numeric release tuple ('15.5.7' -> (15, 5, 7, 0)); a pre-release sorts below its release. The WHOLE
-    string must parse: anything else returns None, and callers fail closed on it."""
+    """(numeric release parts, release flag) or None. Compare with _ver_lt: numerics padded to equal length
+    ("15.5" == "15.5.0"), the flag (0 pre-release < 1 release) only breaks a numeric tie. The WHOLE string
+    must parse: anything else returns None, and callers fail closed on it."""
     m = _VER.fullmatch(str(v or ""))
     if not m:
         return None
-    return tuple(int(x) for x in m[1].split(".")) + ((-1,) if m[2] else (0,))
+    return tuple(int(x) for x in m[1].split(".")), (0 if m[2] else 1)
+
+
+def _ver_lt(a, b) -> bool:
+    (an, af), (bn, bf) = a, b
+    n = max(len(an), len(bn))
+    an, bn = an + (0,) * (n - len(an)), bn + (0,) * (n - len(bn))
+    return (an, af) < (bn, bf)
 
 
 def load_allow(path):
@@ -102,11 +110,11 @@ def main(argv):
     for spec in a.require_min:
         name, _, floor = spec.partition("=")
         fv = _ver(floor)
-        if not name or fv is None or fv[-1] == -1:   # a pre-release floor can't be compared safely: refused
+        if not name or fv is None or fv[1] == 0:   # a pre-release floor can't be compared safely: refused
             print(f"KEV gate: bad --require-min {spec!r}; failing closed", file=sys.stderr)
             return 2
         low = [p.get("Version") for r in results for p in (r.get("Packages") or [])
-               if p.get("Name") == name and (_ver(p.get("Version")) is None or _ver(p.get("Version")) < fv)]
+               if p.get("Name") == name and (_ver(p.get("Version")) is None or _ver_lt(_ver(p.get("Version")), fv))]
         if name not in pkgs:
             print(f"KEV gate: --require-min {name}: no such package in the scan; failing closed", file=sys.stderr)
             return 2
