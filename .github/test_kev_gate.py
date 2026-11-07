@@ -35,6 +35,8 @@ CASES = [  # name, scan, feed, allow, args, want
     ("partial scan (no os-pkgs) fails closed", scan([], os_result=False), feed(), "", ["--require-pkg", "next", "--require-class", "os-pkgs", "--require-class", "lang-pkgs"], 2),
     ("full-coverage clean scan passes", scan([]), feed(), "", ["--require-pkg", "next", "--require-class", "os-pkgs", "--require-class", "lang-pkgs"], 0),
     ("KEV under a GHSA id with the CVE as a vendor alias blocks", scan([("GHSA-9qr9-h5gf-34mp", "next")], vendor=["CVE-2025-55182"]), feed(), "", [], 1),
+    ("an allowed alias does not hide an unallowed KEV id", scan([("CVE-2025-55182", "vite")], vendor=["CVE-2025-31125"]), feed(),
+     "CVE-2025-31125 vite exp:2099-01-01\n", [], 1),
     ("next below the floor blocks", scan([], versions={"next": "15.5.4"}), feed(), "", ["--require-min", "next=15.5.7"], 1),
     ("next pre-release below the floor blocks", scan([], versions={"next": "15.5.7-canary.1"}), feed(), "", ["--require-min", "next=15.5.7"], 1),
     ("next at the floor passes", scan([], versions={"next": "15.5.7"}), feed(), "", ["--require-min", "next=15.5.7"], 0),

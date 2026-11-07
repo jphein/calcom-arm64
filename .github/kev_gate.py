@@ -94,9 +94,8 @@ def main(argv):
     for res in results:
         for v in res.get("Vulnerabilities") or []:
             ids = {v.get("VulnerabilityID")} | set(v.get("VendorIDs") or [])   # aliases: trivy may name a KEV by GHSA or a vendor CVE
-            hit = sorted(i for i in ids if i in kev)
-            if hit:
-                key = (hit[0], v.get("PkgName", "?"))
+            for kid in sorted(i for i in ids if i in kev):   # every KEV id on its own: an allowed alias hides nothing
+                key = (kid, v.get("PkgName", "?"))
                 row = (*key, v.get("InstalledVersion", "?"), v.get("FixedVersion") or "no fix", res.get("Target", "?"))
                 (allowed if key in allow else hits).add(row)
     for r in sorted(allowed):
