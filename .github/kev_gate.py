@@ -15,6 +15,15 @@ FEED_MAX_AGE_DAYS = 14
 SENTINEL = "CVE-2025-55182"  # the incident CVE: a feed without it is not the feed we think it is
 
 
+def _ver(v):
+    """Numeric release tuple ('15.5.7' -> (15, 5, 7)); a pre-release sorts below its release; unparsable -> (0,)."""
+    m = re.match(r"v?(\d+(?:\.\d+)*)(-)?", str(v or ""))
+    if not m:
+        return (0,)
+    nums = tuple(int(x) for x in m[1].split("."))
+    return nums + ((-1,) if m[2] else (0,))
+
+
 def load_allow(path):
     allow, today = {}, datetime.date.today()
     try:
@@ -40,6 +49,7 @@ def main(argv):
     ap.add_argument("scan"); ap.add_argument("kev"); ap.add_argument("allow")
     ap.add_argument("--image-id", required=True)
     ap.add_argument("--require-pkg", action="append", default=[])
+    ap.add_argument("--require-min", action="append", default=[], help="pkg=version: every scanned copy of pkg must be >= version")
     ap.add_argument("--require-class", action="append", default=[], help="trivy result Class that must be present (os-pkgs, lang-pkgs)")
     a = ap.parse_args(argv)
     try:
@@ -72,12 +82,21 @@ def main(argv):
     if missing:
         print(f"KEV gate: required packages not in the scan {missing} ({len(pkgs)} packages seen); failing closed", file=sys.stderr)
         return 2
+    for spec in a.require_min:
+        name, _, floor = spec.partition("=")
+        low = [p.get("Version") for r in results for p in (r.get("Packages") or [])
+               if p.get("Name") == name and _ver(p.get("Version")) < _ver(floor)]
+        if low:
+            print(f"KEV gate: {name} {sorted(set(map(str, low)))} below the required {floor}", file=sys.stderr)
+            return 1
     allow = load_allow(a.allow)
     hits, allowed = set(), set()
     for res in results:
         for v in res.get("Vulnerabilities") or []:
-            if v.get("VulnerabilityID") in kev:
-                key = (v["VulnerabilityID"], v.get("PkgName", "?"))
+            ids = {v.get("VulnerabilityID")} | set(v.get("VendorIDs") or [])   # aliases: trivy may name a KEV by GHSA or a vendor CVE
+            hit = sorted(i for i in ids if i in kev)
+            if hit:
+                key = (hit[0], v.get("PkgName", "?"))
                 row = (*key, v.get("InstalledVersion", "?"), v.get("FixedVersion") or "no fix", res.get("Target", "?"))
                 (allowed if key in allow else hits).add(row)
     for r in sorted(allowed):

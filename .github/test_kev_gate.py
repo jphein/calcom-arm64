@@ -12,11 +12,11 @@ def feed(released=NOW, drop=()):
     return {"dateReleased": released, "vulnerabilities": [{"cveID": c} for c in ids if c not in drop]}
 
 
-def scan(vulns, pkgs=("next", "vite"), image="sha256:abc", results=True, os_result=True):
+def scan(vulns, pkgs=("next", "vite"), image="sha256:abc", results=True, os_result=True, versions=None, vendor=None):
     if not results:
         return {"Metadata": {"ImageID": image}, "Results": []}
-    v = [{"VulnerabilityID": c, "PkgName": p, "InstalledVersion": "x"} for c, p in vulns]
-    res = [{"Target": "node", "Class": "lang-pkgs", "Packages": [{"Name": p} for p in pkgs], "Vulnerabilities": v}]
+    v = [{"VulnerabilityID": c, "PkgName": p, "InstalledVersion": "x", "VendorIDs": vendor or []} for c, p in vulns]
+    res = [{"Target": "node", "Class": "lang-pkgs", "Packages": [{"Name": p, "Version": (versions or {}).get(p, "1.0.0")} for p in pkgs], "Vulnerabilities": v}]
     if os_result:
         res.append({"Target": "debian", "Class": "os-pkgs", "Packages": [{"Name": "libc6"}]})
     return {"Metadata": {"ImageID": image}, "Results": res}
@@ -34,6 +34,11 @@ CASES = [  # name, scan, feed, allow, args, want
     ("feed without sentinel fails closed", scan([]), feed(drop=("CVE-2025-55182",)), "", [], 2),
     ("partial scan (no os-pkgs) fails closed", scan([], os_result=False), feed(), "", ["--require-pkg", "next", "--require-class", "os-pkgs", "--require-class", "lang-pkgs"], 2),
     ("full-coverage clean scan passes", scan([]), feed(), "", ["--require-pkg", "next", "--require-class", "os-pkgs", "--require-class", "lang-pkgs"], 0),
+    ("KEV under a GHSA id with the CVE as a vendor alias blocks", scan([("GHSA-9qr9-h5gf-34mp", "next")], vendor=["CVE-2025-55182"]), feed(), "", [], 1),
+    ("next below the floor blocks", scan([], versions={"next": "15.5.4"}), feed(), "", ["--require-min", "next=15.5.7"], 1),
+    ("next pre-release below the floor blocks", scan([], versions={"next": "15.5.7-canary.1"}), feed(), "", ["--require-min", "next=15.5.7"], 1),
+    ("next at the floor passes", scan([], versions={"next": "15.5.7"}), feed(), "", ["--require-min", "next=15.5.7"], 0),
+    ("next 16 passes a 15.5.7 floor", scan([], versions={"next": "16.1.5"}), feed(), "", ["--require-min", "next=15.5.7"], 0),
     ("clean scan passes", scan([]), feed(), "", ["--require-pkg", "next"], 0),
 ]
 

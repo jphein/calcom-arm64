@@ -121,7 +121,7 @@ jobs:
           img=$(docker image inspect calcom-arm64:gate --format '{{.Id}}')
           "$t/trivy" image --quiet --scanners vuln --list-all-pkgs --format json -o "$t/scan.json" calcom-arm64:gate
           curl -sSfL https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json -o "$t/kev.json"
-          python3 _gate/.github/kev_gate.py "$t/scan.json" "$t/kev.json" _gate/kev-allow.txt --image-id "$img" --require-pkg next --require-class os-pkgs --require-class lang-pkgs
+          python3 _gate/.github/kev_gate.py "$t/scan.json" "$t/kev.json" _gate/kev-allow.txt --image-id "$img" --require-pkg next --require-min next=15.5.7 --require-class os-pkgs --require-class lang-pkgs
           echo "GATED_ID=$img" >> "$GITHUB_ENV"
       - name: push the scanned image (re-tag, no rebuild)
         env:
