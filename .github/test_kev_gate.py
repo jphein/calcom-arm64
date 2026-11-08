@@ -34,7 +34,18 @@ def scan_nested_next():
     return s
 
 
+def scan_mixed_next():
+    """the 15.5.28 bump took for the app, but a stale 15.5.7 copy survived elsewhere (not under the excluded examples)."""
+    s = scan([], pkgs=("vite",), versions={})
+    s["Results"][0]["Packages"] = [
+        {"Name": "next", "Version": "15.5.28", "FilePath": "calcom/node_modules/next/package.json"},
+        {"Name": "next", "Version": "15.5.7", "FilePath": "calcom/apps/web/node_modules/next/package.json"},
+    ]
+    return s
+
+
 CASES = [  # name, scan, feed, allow, args, want
+    ("one stale non-excluded copy below the floor blocks even when the hoisted copy is new", scan_mixed_next(), feed(), "", ["--require-pkg", "next", "--require-min", "next=15.5.28", "--exclude-path", "*/packages/platform/examples/*"], 1),
     ("a nested example copy below the floor blocks without an exclusion", scan_nested_next(), feed(), "", ["--require-pkg", "next", "--require-min", "next=15.5.7"], 1),
     ("the same copy is skipped with --exclude-path", scan_nested_next(), feed(), "", ["--require-pkg", "next", "--require-min", "next=15.5.7", "--exclude-path", "*/packages/platform/examples/*"], 0),
     ("an exclusion never hides the served copy", scan_nested_next(), feed(), "", ["--require-pkg", "next", "--require-min", "next=16.0.0", "--exclude-path", "*/packages/platform/examples/*"], 1),
