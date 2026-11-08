@@ -69,6 +69,7 @@ def main(argv):
     ap.add_argument("--require-pkg", action="append", default=[])
     ap.add_argument("--require-min", action="append", default=[], help="pkg=version: every scanned copy of pkg must be >= version")
     ap.add_argument("--require-class", action="append", default=[], help="trivy result Class that must be present (os-pkgs, lang-pkgs)")
+    ap.add_argument("--exclude-path", action="append", default=[], help="glob (fnmatch) of package/target paths left out of every check, e.g. '*/packages/platform/examples/*' for cal.com's never-served example projects")
     a = ap.parse_args(argv)
     try:
         scan = json.load(open(a.scan))
@@ -93,6 +94,17 @@ def main(argv):
     if sid != a.image_id:
         print(f"KEV gate: scan ImageID {sid} is not the built image {a.image_id}; failing closed", file=sys.stderr)
         return 2
+    if a.exclude_path:
+        import fnmatch
+        def excluded(path): return isinstance(path, str) and any(fnmatch.fnmatch(path, g) for g in a.exclude_path)
+        dropped = 0
+        for r in results:
+            if not isinstance(r, dict): continue
+            tgt = r.get("Target")
+            keep = [p for p in (r.get("Packages") or []) if not (isinstance(p, dict) and (excluded(p.get("FilePath")) or excluded(tgt)))]
+            dropped += len(r.get("Packages") or []) - len(keep); r["Packages"] = keep
+            r["Vulnerabilities"] = [v for v in (r.get("Vulnerabilities") or []) if not (isinstance(v, dict) and (excluded(v.get("PkgPath")) or excluded(tgt)))]
+        print(f"KEV gate: excluded {dropped} package(s) under {a.exclude_path} (not served; every check skips them)")
     named = lambda r: [p for p in (r.get("Packages") or []) if isinstance(p, dict) and isinstance(p.get("Name"), str) and p["Name"]]
     pkgs = {p["Name"] for r in results if isinstance(r, dict) for p in named(r)}
     if not pkgs:
