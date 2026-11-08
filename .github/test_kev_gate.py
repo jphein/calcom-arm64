@@ -23,7 +23,21 @@ def scan(vulns, pkgs=("next", "vite"), image="sha256:abc", results=True, os_resu
     return {"Metadata": {"ImageID": image}, "Results": res}
 
 
+
+def scan_nested_next():
+    """cal.com ships next 15.5.7 for the app and a never-served next 14.2.25 under packages/platform/examples/base."""
+    s = scan([], pkgs=("vite",), versions={})
+    s["Results"][0]["Packages"] = [
+        {"Name": "next", "Version": "15.5.7", "FilePath": "calcom/node_modules/next/package.json"},
+        {"Name": "next", "Version": "14.2.25", "FilePath": "calcom/packages/platform/examples/base/node_modules/next/package.json"},
+    ]
+    return s
+
+
 CASES = [  # name, scan, feed, allow, args, want
+    ("a nested example copy below the floor blocks without an exclusion", scan_nested_next(), feed(), "", ["--require-pkg", "next", "--require-min", "next=15.5.7"], 1),
+    ("the same copy is skipped with --exclude-path", scan_nested_next(), feed(), "", ["--require-pkg", "next", "--require-min", "next=15.5.7", "--exclude-path", "*/packages/platform/examples/*"], 0),
+    ("an exclusion never hides the served copy", scan_nested_next(), feed(), "", ["--require-pkg", "next", "--require-min", "next=16.0.0", "--exclude-path", "*/packages/platform/examples/*"], 1),
     ("KEV next blocks", scan([("CVE-2025-55182", "next")]), feed(), "", ["--require-pkg", "next"], 1),
     ("allowed vite passes", scan([("CVE-2025-31125", "vite")]), feed(), "CVE-2025-31125 vite exp:2099-01-01\n", ["--require-pkg", "next"], 0),
     ("allow is per package", scan([("CVE-2025-31125", "esbuild")]), feed(), "CVE-2025-31125 vite exp:2099-01-01\n", [], 1),
