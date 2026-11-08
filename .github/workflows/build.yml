@@ -37,16 +37,31 @@ jobs:
           git -C calcom fetch --depth 1 origin "refs/tags/$REF:refs/tags/$REF" 2>/dev/null || git -C calcom fetch --depth 1 origin "$REF"
           git -C calcom -c advice.detachedHead=false checkout --force FETCH_HEAD 2>/dev/null || git -C calcom -c advice.detachedHead=false checkout --force "refs/tags/$REF"
           echo "cal.com source now at $(git -C calcom rev-parse HEAD) ($REF)"
+      - name: our source patches (patches/*.patch, fork-first; see patches/README.md)
+        uses: actions/checkout@v4
+        with:
+          path: ours
+          fetch-depth: 1
+      - name: apply source patches
+        id: patches
+        run: |
+          n=0
+          for p in "$GITHUB_WORKSPACE"/ours/patches/*.patch; do
+            [ -e "$p" ] || continue
+            git -C calcom apply --check "$p" && git -C calcom apply "$p" && n=$((n+1)) && echo "applied $(basename "$p")"
+          done
+          echo "count=$n" >> "$GITHUB_OUTPUT"; echo "patches applied: $n"
       - name: cal.com version from the submodule
         id: ver
         env:
           RN: ${{ inputs.runner_node }}
           DT: ${{ inputs.docker_tag }}
+          PC: ${{ steps.patches.outputs.count }}
         run: |
           [[ "$RN" =~ ^[0-9]{2}(-[a-z]+)?$ ]] || { echo "runner_node must look like 22 or 22-bookworm" >&2; exit 1; }
           v=$(python3 -c 'import json;print(json.load(open("calcom/apps/web/package.json"))["version"])')
           echo "version=$v" >> "$GITHUB_OUTPUT"; echo "stamp=$(date -u +%Y%m%d)" >> "$GITHUB_OUTPUT"; echo "cal.com $v (docker tag $DT)"
-          sfx=""; [ "$RN" != "18" ] && sfx="-node$RN"; echo "suffix=$sfx" >> "$GITHUB_OUTPUT"
+          sfx=""; [ "$RN" != "18" ] && sfx="-node$RN"; [ "${PC:-0}" != "0" ] && sfx="$sfx-p$PC"; echo "suffix=$sfx" >> "$GITHUB_OUTPUT"
       - name: arm64 fixes to the unmodified Dockerfile (no source change)
         # 1st run 2026-11-03 (run 41682735370) failed at `yarn … @calcom/web run build` with "command not found: turbo":
         # on arm64 the turbo bin was not linked after `yarn install`. Fetch every platform's optional binaries and put the
