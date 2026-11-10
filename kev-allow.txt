@@ -1,4 +1,3 @@
 # KEV findings allowed through the build gate. One per line: <CVE> <pkg> exp:YYYY-MM-DD # reason
 # Never allow anything reachable from the network in production. Re-judge at exp.
-# vite: CVE-2025-31125 is an arbitrary file read in vite's DEV server; production runs `next start`, vite never listens.
-CVE-2025-31125 vite exp:2026-12-07 # dev-server only; shipped as a build dep by cal.com upstream
+# vite: CVE-2025-31125 (dev-server file read) was allowed 2026-11-07..11-10 as a build-only dep; since 2026-11-10 the build prunes every vite copy, so it is no longer allowed: a copy that returns fails the gate.

@@ -8,3 +8,5 @@ replaced at container start by `scripts/replace-placeholder.sh`). No code change
 the Dockerfile's defaults.
 
 Build: `.github/workflows/build.yml` (workflow_dispatch with the calcom/docker tag to build).
+
+Since 2026-11-10 the workflow also prunes build-only trees at the end of the `builder-two` stage (every `node_modules/vite`, `vitest` and `vite-node` copy, `apps/web/.next/standalone`, `packages/platform/examples/base/node_modules`) and purges `openssh-client` from the runner. Nothing served changes (`next start` reads `.next`, never `standalone`; no shipped code requires vite), the image loses ~700 MB, and the KEV gate carries no allow line any more: a vite or ssh copy that returns fails the build.

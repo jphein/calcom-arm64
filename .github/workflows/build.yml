@@ -79,14 +79,26 @@ jobs:
           sed -i "s|^RUN yarn install$|RUN yarn install\nRUN npm install -g turbo@$tv \&\& (ls -la node_modules/.bin/turbo node_modules/turbo/bin apps/web/node_modules/.bin 2>\&1 \| head -20; which turbo; turbo --version; cd apps/web \&\& yarn bin turbo; true)|" Dockerfile
           grep -q '^RUN npm install -g turbo' Dockerfile || { echo "turbo fallback not applied" >&2; exit 1; }
           # Debian security refresh in the RUNNER stage (fleet brief 2026-11-03: fixable imagemagick CRITICALs, linux-libc-dev KEV in
-          # the node:18 base). The build stages are untouched; the app's node_modules (vite etc.) are build-only deps shipped by upstream.
+          # the node:18 base). The build stages are untouched. openssh-client is purged from the runner (CVE-2026-123158 became a
+          # CISA-KEV with no bookworm fix on 2026-11-09; Cal.com never runs ssh; git only Recommends it) and its absence is checked.
           python3 - <<'PY'
           s = open("Dockerfile").read()
           anchor = "FROM node:18 AS runner\n"
           assert anchor in s, "runner stage not found"
-          s = s.replace(anchor, anchor + "RUN apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get -y -qq upgrade && rm -rf /var/lib/apt/lists/*\n", 1)
-          open("Dockerfile", "w").write(s); print("runner stage: apt upgrade added")
+          # Prune build-only trees at the END of builder-two, i.e. BEFORE the runner's single `COPY --from=builder-two /calcom ./`
+          # layer: a delete in a later runner RUN would leave the bytes in the COPY layer underneath. Removed: vite/vitest/vite-node
+          # (embed build tooling; 7 copies carried CVE-2025-31125, a CISA-KEV dev-server file read, through 2026-11-10 on an allow
+          # line that is now gone), apps/web/.next/standalone (522 MB second copy of the app; CMD is `next start`, which reads .next
+          # only) and packages/platform/examples/base/node_modules (the never-served demo app's own next 14 + deps). The
+          # tree is checked empty of vite afterwards so a missed copy fails the build, not the KEV gate later.
+          prune = ("RUN rm -rf apps/web/.next/standalone packages/platform/examples/base/node_modules"
+                   " && find /calcom -type d \\( -path '*/node_modules/vite' -o -path '*/node_modules/vitest' -o -path '*/node_modules/vite-node' \\) -prune -print -exec rm -rf {} +"
+                   " && test -z \"$(find /calcom -type d -path '*/node_modules/vite' -print -quit)\""
+                   " && du -sh /calcom\n")
+          s = s.replace(anchor, prune + anchor + "RUN apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get -y -qq upgrade && apt-get -y -qq purge openssh-client && apt-get -y -qq autoremove && rm -rf /var/lib/apt/lists/* && ! command -v ssh\n", 1)
+          open("Dockerfile", "w").write(s); print("builder-two: build-only prune added; runner stage: apt upgrade added")
           PY
+          grep -q '^RUN rm -rf apps/web/.next/standalone' Dockerfile || { echo "prune not applied" >&2; exit 1; }
           [[ "$RN" =~ ^[0-9]{2}(-[a-z]+)?$ ]] || { echo "bad runner_node" >&2; exit 1; }
           if [ "$RN" != "18" ]; then
             sed -i "s|^FROM node:18 AS runner$|FROM node:$RN AS runner|" Dockerfile
