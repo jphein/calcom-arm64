@@ -51,6 +51,25 @@ jobs:
             git -C calcom apply --check "$p" && git -C calcom apply "$p" && n=$((n+1)) && echo "applied $(basename "$p")"
           done
           echo "count=$n" >> "$GITHUB_OUTPUT"; echo "patches applied: $n"
+      - name: refresh yarn.lock for the patched resolutions (patch 0002 pins next in package.json; the lock delta is computed here, never carried in a patch)
+        # Order (xreview #7 r1, Sen 7224636332): (1) the step above applied every patch, 0002 being the package.json
+        # resolutions pin only; (2) this step regenerates yarn.lock from that pinned manifest with the repo's own yarn
+        # (packageManager yarn@3.4.1 via corepack; asserted, not printed, so a corepack drift cannot write the lock with
+        # another yarn); (3) the greps fail the build if the lock does not resolve next to 15.5.28 or still carries the
+        # 15.5.4 entry. No install, no node_modules. 2026-11-27: the lock delta 0002 used to carry stopped applying at
+        # the same cal.com commit (run 46034658468, yarn.lock:5315; blob 1039e6a4 at bf89991), so the gate saw 15.5.4.
+        run: |
+          corepack enable
+          cd calcom
+          want=$(sed -nE 's/^ *"packageManager": *"yarn@([0-9][0-9.]*)".*/\1/p' package.json)
+          [ -n "$want" ] || { echo "package.json pins no packageManager yarn@<version>; refusing to regenerate the lock with an unpinned yarn" >&2; exit 1; }
+          have=$(yarn --version)
+          [ "$have" = "$want" ] || { echo "yarn is $have, package.json pins yarn@$want; the lock is not regenerated with another yarn" >&2; exit 1; }
+          echo "yarn $have = packageManager yarn@$want"
+          yarn install --mode update-lockfile
+          git diff --stat -- yarn.lock | tail -1
+          grep -q '^"next@npm:15.5.28":' yarn.lock || { echo "yarn.lock does not resolve next to 15.5.28 after the refresh" >&2; exit 1; }
+          ! grep -q '^"next@npm:15.5.4":' yarn.lock || { echo "a next@15.5.4 entry survived the resolution" >&2; exit 1; }
       - name: cal.com version from the submodule
         id: ver
         env:
