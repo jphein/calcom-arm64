@@ -51,6 +51,18 @@ jobs:
             git -C calcom apply --check "$p" && git -C calcom apply "$p" && n=$((n+1)) && echo "applied $(basename "$p")"
           done
           echo "count=$n" >> "$GITHUB_OUTPUT"; echo "patches applied: $n"
+      - name: refresh yarn.lock for the patched resolutions (patch 0002 pins next in package.json; the lock delta is computed here, never carried in a patch)
+        # 2026-11-27: the lock delta patch 0002 used to carry stopped applying at the same cal.com commit it was made for
+        # (run 46034658468, yarn.lock:5315; blob 1039e6a4 at bf89991), so the KEV gate saw next 15.5.4. The pin is the
+        # patch; yarn computes the lock from it, with the project's own yarn (packageManager via corepack), no install.
+        run: |
+          corepack enable
+          cd calcom
+          yarn --version
+          yarn install --mode update-lockfile
+          git diff --stat -- yarn.lock | tail -1
+          grep -q '^"next@npm:15.5.28":' yarn.lock || { echo "yarn.lock does not resolve next to 15.5.28 after the refresh" >&2; exit 1; }
+          ! grep -q '^"next@npm:15.5.4":' yarn.lock || { echo "a next@15.5.4 entry survived the resolution" >&2; exit 1; }
       - name: cal.com version from the submodule
         id: ver
         env:
